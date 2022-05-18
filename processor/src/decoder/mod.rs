@@ -59,7 +59,22 @@ impl Process {
     pub(super) fn start_span_block(&mut self, block: &Span) -> Result<(), ExecutionError> {
         self.execute_op(Operation::Noop)?;
 
-        let hasher_state = [Felt::ZERO; 12];
+        let first_batch = &block.op_batches()[0].groups();
+
+        let hasher_state = [
+            first_batch[0],
+            first_batch[1],
+            first_batch[2],
+            first_batch[3],
+            first_batch[4],
+            first_batch[5],
+            first_batch[6],
+            first_batch[7],
+            Felt::ZERO,
+            Felt::ZERO,
+            Felt::ZERO,
+            Felt::ZERO,
+        ];
         let (addr, _result) = self.hasher.hash(hasher_state);
         self.decoder.start_span(block, addr);
 
@@ -98,14 +113,19 @@ impl Decoder {
         let parent_addr = self.block_stack.push(addr);
         let left_child_hash: Word = block.first().hash().into();
         let right_child_hash: Word = block.second().hash().into();
-        self.trace
-            .append_join_row(parent_addr, left_child_hash, right_child_hash);
+        self.trace.append_row(
+            parent_addr,
+            Operation::Join,
+            left_child_hash,
+            right_child_hash,
+        );
     }
 
     pub fn end_join(&mut self, block: &Join) {
         let block_info = self.block_stack.pop();
         let block_hash: Word = block.hash().into();
-        self.trace.append_end_row(block_info.addr, block_hash);
+        self.trace
+            .append_row(block_info.addr, Operation::End, block_hash, [Felt::ZERO; 4]);
     }
 
     // SPLIT BLOCK
@@ -115,14 +135,19 @@ impl Decoder {
         let parent_addr = self.block_stack.push(addr);
         let left_child_hash: Word = block.on_true().hash().into();
         let right_child_hash: Word = block.on_false().hash().into();
-        self.trace
-            .append_split_row(parent_addr, left_child_hash, right_child_hash);
+        self.trace.append_row(
+            parent_addr,
+            Operation::Split,
+            left_child_hash,
+            right_child_hash,
+        );
     }
 
     pub fn end_split(&mut self, block: &Split) {
         let block_info = self.block_stack.pop();
         let block_hash: Word = block.hash().into();
-        self.trace.append_end_row(block_info.addr, block_hash);
+        self.trace
+            .append_row(block_info.addr, Operation::End, block_hash, [Felt::ZERO; 4]);
     }
 
     // LOOP BLOCK
@@ -142,25 +167,29 @@ impl Decoder {
 
     // SPAN BLOCK
     // --------------------------------------------------------------------------------------------
-    pub fn start_span(&mut self, _block: &Span, addr: Felt) {
+    pub fn start_span(&mut self, block: &Span, addr: Felt) {
         let parent_addr = self.block_stack.push(addr);
-        self.trace.append_span_row(parent_addr);
+        let first_op_batch = &block.op_batches()[0].groups();
+        let num_op_groups = get_group_count(block);
+        self.trace
+            .append_span_start(parent_addr, first_op_batch, num_op_groups);
     }
 
-    pub fn respan(&mut self, _op_batch: &OpBatch) {
-        // TODO: implement
+    pub fn respan(&mut self, op_batch: &OpBatch) {
+        self.trace.append_respan(op_batch.groups());
     }
 
     pub fn execute_user_op(&mut self, op: Operation) {
         if !op.is_decorator() {
-            self.trace.append_op_row(self.block_stack.peek_addr(), op);
+            let addr = self.block_stack.peek_addr();
+            self.trace.append_user_op(addr, op);
         }
     }
 
     pub fn end_span(&mut self, block: &Span) {
-        let block_info = self.block_stack.pop();
+        let _block_info = self.block_stack.pop();
         let block_hash: Word = block.hash().into();
-        self.trace.append_end_row(block_info.addr, block_hash);
+        self.trace.append_span_end(block_hash, Felt::ZERO);
     }
 
     // TRACE GENERATIONS
@@ -179,6 +208,27 @@ impl Default for Decoder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// HELPER FUNCTIONS
+// ================================================================================================
+
+// TODO: move to assembler
+fn get_group_count(block: &Span) -> Felt {
+    let mut result = 0;
+
+    for batch in block.op_batches() {
+        let mut num_batch_groups = 0_u64;
+        for group in batch.groups() {
+            if group == Felt::ZERO {
+                break;
+            }
+            num_batch_groups += 1;
+        }
+        result += num_batch_groups.next_power_of_two();
+    }
+
+    Felt::new(result)
 }
 
 // BLOCK INFO
