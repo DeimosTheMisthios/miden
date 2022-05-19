@@ -172,7 +172,7 @@ impl Decoder {
         let first_op_batch = &block.op_batches()[0].groups();
         let num_op_groups = get_group_count(block);
         self.trace
-            .append_span_start(parent_addr, first_op_batch, num_op_groups);
+            .append_span_start(parent_addr, addr, first_op_batch, num_op_groups);
     }
 
     pub fn respan(&mut self, op_batch: &OpBatch) {
@@ -181,8 +181,7 @@ impl Decoder {
 
     pub fn execute_user_op(&mut self, op: Operation) {
         if !op.is_decorator() {
-            let addr = self.block_stack.peek_addr();
-            self.trace.append_user_op(addr, op);
+            self.trace.append_user_op(op);
         }
     }
 
@@ -258,6 +257,7 @@ impl BlockStack {
         self.blocks.pop().expect("block stack is empty")
     }
 
+    #[allow(dead_code)]
     pub fn peek_addr(&self) -> Felt {
         self.blocks.last().expect("block stack is empty").addr
     }

@@ -174,6 +174,8 @@ struct OpBatchAccumulator {
     group_idx: usize,
     // Index of the next free group in the batch.
     next_group_idx: usize,
+    /// True if the previous non-decorator operation in the batch carried an immediate value.
+    last_op_had_imm: bool,
 }
 
 impl OpBatchAccumulator {
@@ -187,6 +189,7 @@ impl OpBatchAccumulator {
             op_idx: 0,
             group_idx: 0,
             next_group_idx: 1,
+            last_op_had_imm: false,
         }
     }
 

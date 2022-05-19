@@ -18,7 +18,7 @@ pub struct DecoderTrace {
     in_span_trace: Vec<Felt>,
     hasher_trace: [Vec<Felt>; HASHER_WIDTH],
     group_count_trace: Vec<Felt>,
-    span_cursor: SpanCursor,
+    span_context: SpanContext,
 }
 
 impl DecoderTrace {
@@ -29,7 +29,7 @@ impl DecoderTrace {
             in_span_trace: Vec::with_capacity(MIN_TRACE_LEN),
             hasher_trace: new_array_vec(MIN_TRACE_LEN),
             group_count_trace: Vec::with_capacity(MIN_TRACE_LEN),
-            span_cursor: SpanCursor::default(),
+            span_context: SpanContext::default(),
         }
     }
 
@@ -70,8 +70,9 @@ impl DecoderTrace {
     pub fn append_span_start(
         &mut self,
         parent_addr: Felt,
+        span_addr: Felt,
         first_op_batch: &[Felt; OP_BATCH_SIZE],
-        num_span_groups: Felt,
+        num_op_groups: Felt,
     ) {
         self.addr_trace.push(parent_addr);
         self.append_opcode(Operation::Span);
@@ -79,11 +80,12 @@ impl DecoderTrace {
         for (i, &op_group) in first_op_batch.iter().enumerate() {
             self.hasher_trace[i].push(op_group);
         }
-        self.group_count_trace.push(num_span_groups);
+        self.group_count_trace.push(num_op_groups);
 
         // set span cursor to the new span and decrement op group count as we immediately start
         // reading the first group of the first op batch in the span
-        self.span_cursor.new_span(*first_op_batch);
+        self.span_context
+            .new_span(span_addr, num_op_groups, *first_op_batch);
     }
 
     /// Append a trace row for a user operation.
@@ -96,43 +98,25 @@ impl DecoderTrace {
     ///   register of the hasher state) and divide the result by 2^7.
     /// - Set the remaining registers of the hasher state to ZEROs.
     /// - Decrement op group count if this was specified by the previously executed operation.
-    pub fn append_user_op(&mut self, span_addr: Felt, op: Operation) {
+    pub fn append_user_op(&mut self, op: Operation) {
         // set span address
-        self.addr_trace.push(span_addr);
+        self.addr_trace.push(self.span_context.addr());
         self.append_opcode(op);
         self.in_span_trace.push(Felt::ONE);
 
-        // TODO: add comment
-        let last_op_group = self.last_op_group();
-        let op_group = if last_op_group == Felt::ZERO {
-            self.span_cursor.read_group()
-        } else {
-            last_op_group
-        };
+        if self.span_context.end_of_group() {
+            self.span_context.next_group();
+        }
+        self.group_count_trace
+            .push(self.span_context.num_op_groups());
+        let op_group = self.span_context.add_op(op);
 
-        let opcode = op.op_code().expect("no opcode") as u64;
-        let new_op_group = Felt::new((op_group.as_int() - opcode) >> NUM_OP_BITS);
-        self.hasher_trace[OP_GROUP_IDX].push(new_op_group);
+        // TODO: add comment
+        self.hasher_trace[OP_GROUP_IDX].push(op_group);
 
         for column in self.hasher_trace.iter_mut().skip(1) {
             column.push(Felt::ZERO);
         }
-
-        let last_op = self.span_cursor.last_op();
-        let last_group_count = self.last_group_count();
-
-        if matches!(last_op, Operation::Span | Operation::Respan) {
-            self.group_count_trace.push(last_group_count - Felt::ONE);
-        } else if last_op.imm_value().is_some() {
-            self.span_cursor.read_imm_value();
-            self.group_count_trace.push(last_group_count - Felt::ONE);
-        } else if last_op_group == Felt::ZERO {
-            self.group_count_trace.push(last_group_count - Felt::ONE);
-        } else {
-            self.group_count_trace.push(last_group_count);
-        }
-
-        self.span_cursor.set_op(op);
     }
 
     ///
@@ -147,7 +131,7 @@ impl DecoderTrace {
 
         self.group_count_trace.push(self.last_group_count());
 
-        self.span_cursor.respan(op_batch);
+        self.span_context.respan(op_batch);
     }
 
     /// Append a trace row marking the end of a SPAN block.
@@ -222,6 +206,7 @@ impl DecoderTrace {
         *self.addr_trace.last().expect("no last addr")
     }
 
+    #[allow(dead_code)]
     fn last_op_group(&self) -> Felt {
         *self.hasher_trace[OP_GROUP_IDX].last().expect("no op group")
     }
@@ -239,30 +224,61 @@ impl DecoderTrace {
     }
 }
 
-struct SpanCursor {
+// SPAN CONTEXT
+// ================================================================================================
+
+struct SpanContext {
+    addr: Felt,
     last_op: Operation,
     op_groups: [Felt; OP_BATCH_SIZE],
     group_idx: usize,
     next_group_idx: usize,
+    num_op_groups: Felt,
 }
 
-impl SpanCursor {
-    pub fn new_span(&mut self, first_op_batch: [Felt; OP_BATCH_SIZE]) {
+impl SpanContext {
+    pub fn new_span(
+        &mut self,
+        addr: Felt,
+        num_op_groups: Felt,
+        first_op_batch: [Felt; OP_BATCH_SIZE],
+    ) {
+        self.addr = addr;
         self.last_op = Operation::Span;
+        self.num_op_groups = num_op_groups - Felt::ONE;
         self.set_batch(first_op_batch);
     }
 
     pub fn respan(&mut self, op_batch: [Felt; OP_BATCH_SIZE]) {
         self.last_op = Operation::Respan;
+        self.num_op_groups -= Felt::ONE;
         self.set_batch(op_batch);
     }
 
-    pub fn last_op(&self) -> Operation {
-        self.last_op
+    pub fn addr(&self) -> Felt {
+        self.addr
     }
 
-    pub fn set_op(&mut self, op: Operation) {
+    pub fn add_op(&mut self, op: Operation) -> Felt {
         self.last_op = op;
+        let op_group = self.op_groups[self.group_idx];
+        let opcode = op.op_code().expect("no opcode") as u64;
+        self.op_groups[self.group_idx] = Felt::new((op_group.as_int() - opcode) >> NUM_OP_BITS);
+
+        if op.imm_value().is_some() {
+            self.num_op_groups -= Felt::ONE;
+            self.next_group_idx += 1;
+        }
+
+        self.op_groups[self.group_idx]
+    }
+
+    pub fn end_of_group(&self) -> bool {
+        // if the current group has been reduced to ZERO and the last operation didn't carry an
+        // immediate value, we've consumed the entire group. the second check is needed because
+        // an operation with an immediate value can be followed by a NOOP to make sure it is not
+        // the last operation in a group.
+        self.op_groups[self.group_idx] == Felt::ZERO && self.last_op.imm_value().is_none()
     }
 
     pub fn set_batch(&mut self, first_op_batch: [Felt; OP_BATCH_SIZE]) {
@@ -271,26 +287,26 @@ impl SpanCursor {
         self.next_group_idx = 1;
     }
 
-    pub fn read_group(&mut self) -> Felt {
+    pub fn next_group(&mut self) {
         self.group_idx = self.next_group_idx;
         self.next_group_idx += 1;
-        self.op_groups[self.group_idx]
+        self.num_op_groups -= Felt::ONE;
     }
 
-    pub fn read_imm_value(&mut self) -> Felt {
-        let value = self.op_groups[self.next_group_idx];
-        self.next_group_idx += 1;
-        value
+    pub fn num_op_groups(&self) -> Felt {
+        self.num_op_groups
     }
 }
 
-impl Default for SpanCursor {
+impl Default for SpanContext {
     fn default() -> Self {
         Self {
+            addr: Felt::ZERO,
             last_op: Operation::Noop,
             op_groups: [Felt::ZERO; OP_BATCH_SIZE],
             group_idx: 0,
             next_group_idx: 0,
+            num_op_groups: Felt::ZERO,
         }
     }
 }
