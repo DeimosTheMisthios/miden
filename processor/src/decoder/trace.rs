@@ -84,8 +84,7 @@ impl DecoderTrace {
 
         // set span cursor to the new span and decrement op group count as we immediately start
         // reading the first group of the first op batch in the span
-        self.span_context
-            .new_span(span_addr, num_op_groups, *first_op_batch);
+        self.span_context.new_span(span_addr);
     }
 
     /// Append a trace row for a user operation.
@@ -98,21 +97,14 @@ impl DecoderTrace {
     ///   register of the hasher state) and divide the result by 2^7.
     /// - Set the remaining registers of the hasher state to ZEROs.
     /// - Decrement op group count if this was specified by the previously executed operation.
-    pub fn append_user_op(&mut self, op: Operation) {
+    pub fn append_user_op(&mut self, op: Operation, num_groups_left: Felt, group_ops_left: Felt) {
         // set span address
         self.addr_trace.push(self.span_context.addr());
         self.append_opcode(op);
         self.in_span_trace.push(Felt::ONE);
 
-        if self.span_context.end_of_group() {
-            self.span_context.next_group();
-        }
-        self.group_count_trace
-            .push(self.span_context.num_op_groups());
-        let op_group = self.span_context.add_op(op);
-
-        // TODO: add comment
-        self.hasher_trace[OP_GROUP_IDX].push(op_group);
+        self.group_count_trace.push(num_groups_left);
+        self.hasher_trace[OP_GROUP_IDX].push(group_ops_left);
 
         for column in self.hasher_trace.iter_mut().skip(1) {
             column.push(Felt::ZERO);
@@ -131,7 +123,7 @@ impl DecoderTrace {
 
         self.group_count_trace.push(self.last_group_count());
 
-        self.span_context.respan(op_batch);
+        self.span_context.respan();
     }
 
     /// Append a trace row marking the end of a SPAN block.
@@ -229,84 +221,22 @@ impl DecoderTrace {
 
 struct SpanContext {
     addr: Felt,
-    last_op: Operation,
-    op_groups: [Felt; OP_BATCH_SIZE],
-    group_idx: usize,
-    next_group_idx: usize,
-    num_op_groups: Felt,
 }
 
 impl SpanContext {
-    pub fn new_span(
-        &mut self,
-        addr: Felt,
-        num_op_groups: Felt,
-        first_op_batch: [Felt; OP_BATCH_SIZE],
-    ) {
+    pub fn new_span(&mut self, addr: Felt) {
         self.addr = addr;
-        self.last_op = Operation::Span;
-        self.num_op_groups = num_op_groups - Felt::ONE;
-        self.set_batch(first_op_batch);
     }
 
-    pub fn respan(&mut self, op_batch: [Felt; OP_BATCH_SIZE]) {
-        self.last_op = Operation::Respan;
-        self.num_op_groups -= Felt::ONE;
-        self.set_batch(op_batch);
-    }
+    pub fn respan(&mut self) {}
 
     pub fn addr(&self) -> Felt {
         self.addr
-    }
-
-    pub fn add_op(&mut self, op: Operation) -> Felt {
-        self.last_op = op;
-        let op_group = self.op_groups[self.group_idx];
-        let opcode = op.op_code().expect("no opcode") as u64;
-        self.op_groups[self.group_idx] = Felt::new((op_group.as_int() - opcode) >> NUM_OP_BITS);
-
-        if op.imm_value().is_some() {
-            self.num_op_groups -= Felt::ONE;
-            self.next_group_idx += 1;
-        }
-
-        self.op_groups[self.group_idx]
-    }
-
-    pub fn end_of_group(&self) -> bool {
-        // if the current group has been reduced to ZERO and the last operation didn't carry an
-        // immediate value, we've consumed the entire group. the second check is needed because
-        // an operation with an immediate value can be followed by a NOOP to make sure it is not
-        // the last operation in a group.
-        self.op_groups[self.group_idx] == Felt::ZERO && self.last_op.imm_value().is_none()
-    }
-
-    pub fn set_batch(&mut self, first_op_batch: [Felt; OP_BATCH_SIZE]) {
-        self.op_groups = first_op_batch;
-        self.group_idx = 0;
-        self.next_group_idx = 1;
-    }
-
-    pub fn next_group(&mut self) {
-        self.group_idx = self.next_group_idx;
-        self.next_group_idx += 1;
-        self.num_op_groups -= Felt::ONE;
-    }
-
-    pub fn num_op_groups(&self) -> Felt {
-        self.num_op_groups
     }
 }
 
 impl Default for SpanContext {
     fn default() -> Self {
-        Self {
-            addr: Felt::ZERO,
-            last_op: Operation::Noop,
-            op_groups: [Felt::ZERO; OP_BATCH_SIZE],
-            group_idx: 0,
-            next_group_idx: 0,
-            num_op_groups: Felt::ZERO,
-        }
+        Self { addr: Felt::ZERO }
     }
 }

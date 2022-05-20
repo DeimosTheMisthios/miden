@@ -77,6 +77,16 @@ impl Span {
         ops
     }
 
+    /// Returns the total number of operation groups in this span block.
+    ///
+    /// This includes the padding groups needed to ensure that number of operation groups in
+    /// all operation batches is a power of 2.
+    pub fn get_num_op_groups(&self) -> usize {
+        self.op_batches
+            .iter()
+            .fold(0, |acc, batch| acc + batch.num_groups())
+    }
+
     // SPAN MUTATORS
     // --------------------------------------------------------------------------------------------
 
@@ -174,8 +184,6 @@ struct OpBatchAccumulator {
     group_idx: usize,
     // Index of the next free group in the batch.
     next_group_idx: usize,
-    /// True if the previous non-decorator operation in the batch carried an immediate value.
-    last_op_had_imm: bool,
 }
 
 impl OpBatchAccumulator {
@@ -189,7 +197,6 @@ impl OpBatchAccumulator {
             op_idx: 0,
             group_idx: 0,
             next_group_idx: 1,
-            last_op_had_imm: false,
         }
     }
 

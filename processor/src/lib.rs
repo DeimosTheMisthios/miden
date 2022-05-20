@@ -50,6 +50,13 @@ pub use errors::ExecutionError;
 mod debug;
 pub use debug::{VmState, VmStateIterator};
 
+// CONSTANTS
+// ================================================================================================
+
+// TODO: get from core
+const NUM_OP_BITS: usize = 7;
+const OP_BATCH_SIZE: usize = 8;
+
 // TYPE ALIASES
 // ================================================================================================
 
@@ -308,4 +315,9 @@ impl Process {
         let aux_table = AuxTable::new(self.hasher, self.bitwise, self.memory);
         (self.system, self.decoder, self.stack, self.range, aux_table)
     }
+}
+
+fn remove_opcode_from_group(op_group: Felt, op: Operation) -> Felt {
+    let opcode = op.op_code().expect("no opcode") as u64;
+    Felt::new((op_group.as_int() - opcode) >> NUM_OP_BITS)
 }

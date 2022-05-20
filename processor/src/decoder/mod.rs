@@ -179,10 +179,10 @@ impl Decoder {
         self.trace.append_respan(op_batch.groups());
     }
 
-    pub fn execute_user_op(&mut self, op: Operation) {
-        if !op.is_decorator() {
-            self.trace.append_user_op(op);
-        }
+    pub fn execute_user_op(&mut self, op: Operation, num_groups_left: Felt, group_ops_left: Felt) {
+        debug_assert!(!op.is_decorator(), "op is a decorator");
+        self.trace
+            .append_user_op(op, num_groups_left, group_ops_left);
     }
 
     pub fn end_span(&mut self, block: &Span) {
@@ -215,18 +215,9 @@ impl Default for Decoder {
 // TODO: move to assembler
 fn get_group_count(block: &Span) -> Felt {
     let mut result = 0;
-
     for batch in block.op_batches() {
-        let mut num_batch_groups = 0_u64;
-        for group in batch.groups() {
-            if group == Felt::ZERO {
-                break;
-            }
-            num_batch_groups += 1;
-        }
-        result += num_batch_groups.next_power_of_two();
+        result += batch.num_groups() as u64;
     }
-
     Felt::new(result)
 }
 
