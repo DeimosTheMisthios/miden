@@ -112,7 +112,7 @@ impl DecoderTrace {
     }
 
     ///
-    pub fn append_respan(&mut self, op_batch: [Felt; OP_BATCH_SIZE]) {
+    pub fn append_respan(&mut self, op_batch: &[Felt; OP_BATCH_SIZE]) {
         self.addr_trace.push(self.last_addr());
         self.append_opcode(Operation::Respan);
         self.in_span_trace.push(Felt::ONE);

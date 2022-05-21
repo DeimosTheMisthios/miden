@@ -6,6 +6,17 @@ use vm_core::{FieldElement, Word};
 mod trace;
 use trace::DecoderTrace;
 
+#[cfg(test)]
+mod tests;
+
+// CONSTANTS
+// ================================================================================================
+
+const NUM_OP_BITS: usize = Operation::OP_BITS;
+
+// TODO: get from core
+const HASHER_WIDTH: usize = 8;
+
 // DECODER PROCESS EXTENSION
 // ================================================================================================
 

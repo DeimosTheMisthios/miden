@@ -224,10 +224,13 @@ impl Process {
     /// Executes the specified [Span] block.
     #[inline(always)]
     fn execute_span_block(&mut self, block: &Span) -> Result<(), ExecutionError> {
+        let mut num_groups_left = get_num_op_groups_in_span(block);
+
         self.start_span_block(block)?;
 
         // execute the first operation batch
-        self.execute_op_batch(&block.op_batches()[0])?;
+        num_groups_left -= Felt::ONE;
+        self.execute_op_batch(&block.op_batches()[0], &mut num_groups_left)?;
 
         // if the span contains more operation batches, execute them. each additional batch is
         // preceded by a RESPAN operation; executing RESPAN operation does not change the state
@@ -235,7 +238,9 @@ impl Process {
         for op_batch in block.op_batches().iter().skip(1) {
             self.decoder.respan(op_batch);
             self.execute_op(Operation::Noop)?;
-            self.execute_op_batch(op_batch)?;
+
+            num_groups_left -= Felt::ONE;
+            self.execute_op_batch(op_batch, &mut num_groups_left)?;
         }
 
         self.end_span_block(block)
@@ -248,11 +253,17 @@ impl Process {
     /// - If the number of groups in a batch is not a power of 2, NOOPs are executed (one per
     ///   group) to bring it up to the next power of two (e.g., 3 -> 4, 5 -> 8).
     #[inline(always)]
-    fn execute_op_batch(&mut self, batch: &OpBatch) -> Result<(), ExecutionError> {
+    fn execute_op_batch(
+        &mut self,
+        batch: &OpBatch,
+        num_groups_left: &mut Felt,
+    ) -> Result<(), ExecutionError> {
         let op_counts = batch.op_counts();
         let mut op_idx = 0;
         let mut group_idx = 0;
         let mut next_group_idx = 1;
+
+        let mut group_ops_left = batch.groups()[group_idx];
 
         // execute operations in the batch one by one
         for &op in batch.ops() {
@@ -263,8 +274,11 @@ impl Process {
                 continue;
             }
 
+            group_ops_left = remove_opcode_from_group(group_ops_left, op);
+
             // decode and execute the operation
-            self.decoder.execute_user_op(op);
+            self.decoder
+                .execute_user_op(op, *num_groups_left, group_ops_left);
             self.execute_op(op)?;
 
             // if the operation carries an immediate value, the value is stored at the next group
@@ -272,6 +286,7 @@ impl Process {
             let has_imm = op.imm_value().is_some();
             if has_imm {
                 next_group_idx += 1;
+                *num_groups_left -= Felt::ONE;
             }
 
             // determine if we've executed all non-decorator operations in a group
@@ -286,8 +301,15 @@ impl Process {
                 if has_imm {
                     // an operation with immediate value cannot be in the 9th position
                     debug_assert!(op_idx < OP_GROUP_SIZE - 1, "invalid op index");
-                    self.decoder.execute_user_op(Operation::Noop);
+                    self.decoder
+                        .execute_user_op(Operation::Noop, *num_groups_left, group_ops_left);
                     self.execute_op(Operation::Noop)?;
+                }
+
+                *num_groups_left -= Felt::ONE;
+
+                if group_idx < OP_BATCH_SIZE {
+                    group_ops_left = batch.groups()[group_idx];
                 }
             } else {
                 // if we are not at the end of the group, just increment the operation index
@@ -298,7 +320,8 @@ impl Process {
         // for each operation batch we must execute number of groups which is a power of 2; so
         // if the number of groups is not a power of 2, we pad each missing group with a NOOP
         for _ in group_idx..batch.num_groups().next_power_of_two() {
-            self.decoder.execute_user_op(Operation::Noop);
+            self.decoder
+                .execute_user_op(Operation::Noop, *num_groups_left, group_ops_left);
             self.execute_op(Operation::Noop)?;
         }
 
@@ -317,7 +340,17 @@ impl Process {
     }
 }
 
+// HELPER FUNCTIONS
+// ================================================================================================
+
 fn remove_opcode_from_group(op_group: Felt, op: Operation) -> Felt {
     let opcode = op.op_code().expect("no opcode") as u64;
     Felt::new((op_group.as_int() - opcode) >> NUM_OP_BITS)
+}
+
+fn get_num_op_groups_in_span(block: &Span) -> Felt {
+    let result = block.op_batches().iter().fold(0usize, |acc, batch| {
+        acc + batch.num_groups().next_power_of_two()
+    });
+    Felt::new(result as u64)
 }
